@@ -285,6 +285,8 @@ public void scheduleVideoConvert(String path, String dest) {
                 bitrate = (resultWidth/2) * (resultHeight/2) * 10;
                 break;
         }
+        resultWidth = resultWidth + (resultWidth % 4 == 0 ? 0 : (4 - resultWidth % 4));
+        resultHeight = resultHeight + (resultHeight % 4 == 0 ? 0 : (4 - resultHeight % 4));
 
         int rotateRender = 0;
 
