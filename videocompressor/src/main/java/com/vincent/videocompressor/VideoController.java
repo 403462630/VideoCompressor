@@ -9,12 +9,14 @@ import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.os.Build;
+import android.support.annotation.NonNull;
 import android.util.Log;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.text.SimpleDateFormat;
@@ -39,6 +41,11 @@ public class VideoController {
     private final static int PROCESSOR_TYPE_TI = 5;
     private static volatile VideoController Instance = null;
     private boolean videoConvertFirstWrite = true;
+
+    //Default values
+    private final static int DEFAULT_VIDEO_WIDTH = 640;
+    private final static int DEFAULT_VIDEO_HEIGHT = 360;
+    private final static int DEFAULT_VIDEO_BITRATE = 450000;
 
     interface CompressProgressListener {
         void onProgress(float percent);
@@ -156,7 +163,7 @@ public class VideoController {
      * @param dest destination directory to put result
      */
 
-public void scheduleVideoConvert(String path, String dest) {
+    public void scheduleVideoConvert(String path, String dest) {
         startVideoConvertFromQueue(path, dest);
     }
 
@@ -246,15 +253,62 @@ public void scheduleVideoConvert(String path, String dest) {
      * @param destinationPath the destination directory where compressed video is eventually saved
      * @return
      */
+    public boolean convertVideo(final String sourcePath, String destinationPath, int quality, CompressProgressListener listener) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        retriever.setDataSource(sourcePath);
+        String width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+        String height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+        String bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
+        retriever.release();
+        int originalWidth = Integer.valueOf(width);
+        int originalHeight = Integer.valueOf(height);
+        int originalBitrate = Integer.valueOf(bitrate);
+
+        int resultWidth;
+        int resultHeight;
+        int resultBitrate;
+
+        switch (quality) {
+            default:
+            case COMPRESS_QUALITY_HIGH:
+                resultWidth = originalWidth * 2 / 3;
+                resultHeight = originalHeight * 2 / 3;
+                resultBitrate = 100;//originalBitrate * 2 / 3 ;
+                if (resultBitrate > resultWidth * resultHeight * 20) {
+                    resultBitrate = resultWidth * resultHeight * 20;
+                }
+                break;
+            case COMPRESS_QUALITY_MEDIUM:
+                resultWidth = originalWidth; // / 2;
+                resultHeight = originalHeight; // / 2;
+                resultBitrate = originalBitrate / 2;
+                if (resultBitrate > resultWidth * resultHeight * 10) {
+                    resultBitrate = resultWidth * resultHeight * 10;
+                }
+                break;
+            case COMPRESS_QUALITY_LOW:
+                resultWidth = originalWidth; // / 2;
+                resultHeight = originalHeight; // / 2;
+                resultBitrate = originalBitrate / 3;
+                if (resultBitrate > resultWidth * resultHeight * 4) {
+                    resultBitrate = resultWidth * resultHeight * 4;
+                }
+                break;
+        }
+
+        return convertVideo(sourcePath, destinationPath, resultWidth, resultHeight, resultBitrate, listener);
+    }
+
     @TargetApi(16)
-    public boolean  convertVideo(final String sourcePath, String destinationPath, int quality, CompressProgressListener listener) {
-        this.path=sourcePath;
+    public boolean convertVideo(final String sourcePath, String destinationPath, int outWidth, int outHeight, int outBitrate, CompressProgressListener listener) {
+        this.path = sourcePath;
 
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         retriever.setDataSource(path);
         String width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
         String height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
         String rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+        String bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
         long duration = Long.valueOf(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)) * 1000;
 
         long startTime = -1;
@@ -263,28 +317,22 @@ public void scheduleVideoConvert(String path, String dest) {
         int rotationValue = Integer.valueOf(rotation);
         int originalWidth = Integer.valueOf(width);
         int originalHeight = Integer.valueOf(height);
+        int originalBitrate = Integer.valueOf(bitrate);
 
-        int resultWidth;
-        int resultHeight;
-        int bitrate;
-        switch (quality) {
-            default:
-            case COMPRESS_QUALITY_HIGH:
-                resultWidth = originalWidth * 2 / 3;
-                resultHeight = originalHeight * 2 / 3;
-                bitrate = resultWidth * resultHeight * 30;
-                break;
-            case COMPRESS_QUALITY_MEDIUM:
-                resultWidth = originalWidth / 2;
-                resultHeight = originalHeight / 2;
-                bitrate = resultWidth * resultHeight * 10;
-                break;
-            case COMPRESS_QUALITY_LOW:
-                resultWidth = originalWidth / 2;
-                resultHeight = originalHeight / 2;
-                bitrate = (resultWidth/2) * (resultHeight/2) * 10;
-                break;
+        int resultWidth = outWidth > 0 ? outWidth : DEFAULT_VIDEO_WIDTH;
+        int resultHeight = outHeight > 0 ? outHeight : DEFAULT_VIDEO_HEIGHT;
+        int resultBitrate = outBitrate > 0 ? outBitrate : DEFAULT_VIDEO_BITRATE;
+
+        if (resultWidth > originalWidth) {
+            resultWidth = originalWidth;
         }
+        if (resultHeight > originalHeight) {
+            resultHeight = originalHeight;
+        }
+        if (resultBitrate > originalBitrate) {
+            resultBitrate = originalBitrate;
+        }
+
         resultWidth = resultWidth + (resultWidth % 4 == 0 ? 0 : (4 - resultWidth % 4));
         resultHeight = resultHeight + (resultHeight % 4 == 0 ? 0 : (4 - resultHeight % 4));
 
@@ -345,7 +393,7 @@ public void scheduleVideoConvert(String path, String dest) {
                 extractor.setDataSource(inputFile.toString());
 
 
-                if (resultWidth != originalWidth || resultHeight != originalHeight) {
+                if (resultBitrate != originalBitrate || resultWidth != originalWidth || resultHeight != originalHeight) {
                     int videoIndex;
                     videoIndex = selectTrack(extractor, false);
 
@@ -435,7 +483,7 @@ public void scheduleVideoConvert(String path, String dest) {
 
                             MediaFormat outputFormat = MediaFormat.createVideoFormat(MIME_TYPE, resultWidth, resultHeight);
                             outputFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat);
-                            outputFormat.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
+                            outputFormat.setInteger(MediaFormat.KEY_BIT_RATE, resultBitrate);
                             outputFormat.setInteger(MediaFormat.KEY_FRAME_RATE, 25);
                             outputFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10);
                             if (Build.VERSION.SDK_INT < 18) {

@@ -15,12 +15,15 @@ import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import com.vincent.videocompressor.MediaMuxerHelper;
 import com.vincent.videocompressor.VideoCompress;
 
 import java.io.File;
 import java.net.URISyntaxException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
@@ -67,42 +70,53 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View view) {
                 String destPath = tv_output.getText().toString() + File.separator + "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", getLocale()).format(new Date()) + ".mp4";
-                VideoCompress.compressVideoLow(tv_input.getText().toString(), destPath, new VideoCompress.CompressListener() {
-                    @Override
-                    public void onStart() {
-                        tv_indicator.setText("Compressing..." + "\n"
-                                + "Start at: " + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()));
-                        pb_compress.setVisibility(View.VISIBLE);
-                        startTime = System.currentTimeMillis();
-                        Util.writeFile(MainActivity.this, "Start at: " + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()) + "\n");
-                    }
+                new MediaMuxerHelper().test(tv_input.getText().toString(), destPath);
+//                String destPath = tv_output.getText().toString() + File.separator + "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", getLocale()).format(new Date()) + ".mp3";
+//                new MediaMuxerHelper().splitAudio(tv_input.getText().toString(), destPath);
+//                new MediaMuxerHelper().mergeVideo(tv_output.getText().toString() + File.separator + "VID_20190309_194954.mp4", tv_output.getText().toString() + File.separator + "VID_20190309_195314.mp3", destPath);
 
-                    @Override
-                    public void onSuccess() {
-                        String previous = tv_indicator.getText().toString();
-                        tv_indicator.setText(previous + "\n"
-                                + "Compress Success!" + "\n"
-                                + "End at: " + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()));
-                        pb_compress.setVisibility(View.INVISIBLE);
-                        endTime = System.currentTimeMillis();
-                        Util.writeFile(MainActivity.this, "End at: " + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()) + "\n");
-                        Util.writeFile(MainActivity.this, "Total: " + ((endTime - startTime)/1000) + "s" + "\n");
-                        Util.writeFile(MainActivity.this);
-                    }
-
-                    @Override
-                    public void onFail() {
-                        tv_indicator.setText("Compress Failed!");
-                        pb_compress.setVisibility(View.INVISIBLE);
-                        endTime = System.currentTimeMillis();
-                        Util.writeFile(MainActivity.this, "Failed Compress!!!" + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()));
-                    }
-
-                    @Override
-                    public void onProgress(float percent) {
-                        tv_progress.setText(String.valueOf(percent) + "%");
-                    }
-                });
+//                List<String> list = new ArrayList<>();
+//                list.add(tv_output.getText().toString() + File.separator + "VID_20190309_165141.mp4");
+//                list.add(tv_output.getText().toString() + File.separator + "VID_20190306_181209.mp4");
+//                list.add(tv_output.getText().toString() + File.separator + "VID_20190309_193257.mp4");
+//                list.add(tv_output.getText().toString() + File.separator + "VID_20190309_195314.mp3");
+//                new MediaMuxerHelper().mergeVideoList(list, destPath);
+//                VideoCompress.compressVideoHigh(tv_input.getText().toString(), destPath, new VideoCompress.CompressListener() {
+//                    @Override
+//                    public void onStart() {
+//                        tv_indicator.setText("Compressing..." + "\n"
+//                                + "Start at: " + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()));
+//                        pb_compress.setVisibility(View.VISIBLE);
+//                        startTime = System.currentTimeMillis();
+//                        Util.writeFile(MainActivity.this, "Start at: " + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()) + "\n");
+//                    }
+//
+//                    @Override
+//                    public void onSuccess() {
+//                        String previous = tv_indicator.getText().toString();
+//                        tv_indicator.setText(previous + "\n"
+//                                + "Compress Success!" + "\n"
+//                                + "End at: " + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()));
+//                        pb_compress.setVisibility(View.INVISIBLE);
+//                        endTime = System.currentTimeMillis();
+//                        Util.writeFile(MainActivity.this, "End at: " + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()) + "\n");
+//                        Util.writeFile(MainActivity.this, "Total: " + ((endTime - startTime)/1000) + "s" + "\n");
+//                        Util.writeFile(MainActivity.this);
+//                    }
+//
+//                    @Override
+//                    public void onFail() {
+//                        tv_indicator.setText("Compress Failed!");
+//                        pb_compress.setVisibility(View.INVISIBLE);
+//                        endTime = System.currentTimeMillis();
+//                        Util.writeFile(MainActivity.this, "Failed Compress!!!" + new SimpleDateFormat("HH:mm:ss", getLocale()).format(new Date()));
+//                    }
+//
+//                    @Override
+//                    public void onProgress(float percent) {
+//                        tv_progress.setText(String.valueOf(percent) + "%");
+//                    }
+//                });
             }
         });
 
