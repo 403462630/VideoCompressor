@@ -11,7 +11,7 @@ import android.os.AsyncTask;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-public class VideoController2 {
+public class SVideoCompress {
     final int TIMEOUT_USEC = 2500;
     public static final String MIME_TYPE = "video/avc";
     public static final int COMPRESS_QUALITY_HIGH = 1;
@@ -23,6 +23,9 @@ public class VideoController2 {
 
     private MediaExtractor mediaExtractor;
     private MediaMuxer mediaMuxer;
+
+    private InputSurface inputSurface;
+    private OutputSurface outputSurface;
 
     private MediaFormat videoFormat;
     private MediaFormat audioFormat;
@@ -48,15 +51,21 @@ public class VideoController2 {
     private VideoCompressTask compressTask;
 
     private boolean isCompressing;
+    private boolean isCanceled;
 
-    private VideoController2() {}
+    private String videoPath;
+    private String outPath;
+
+    private SVideoCompress() {}
 
     private void init(String videoPath, String outPath) throws IOException {
+        this.videoPath = videoPath;
+        this.outPath = outPath;
         mediaExtractor = new MediaExtractor();
         mediaExtractor.setDataSource(videoPath);
 
-        originVideoTraceIndex = MediaMuxerUtils.findVideoTrackIndex(mediaExtractor);
-        originAudioTraceIndex = MediaMuxerUtils.findAudioTrackIndex(mediaExtractor);
+        originVideoTraceIndex = MediaUtils.findVideoTrackIndex(mediaExtractor);
+        originAudioTraceIndex = MediaUtils.findAudioTrackIndex(mediaExtractor);
 
         originVideoFormat = mediaExtractor.getTrackFormat(originVideoTraceIndex);
         originAudioFormat = mediaExtractor.getTrackFormat(originAudioTraceIndex);
@@ -67,7 +76,8 @@ public class VideoController2 {
     private void initDecoder() throws IOException {
         if (decoder == null) {
             decoder = MediaCodec.createDecoderByType(MIME_TYPE);
-            decoder.configure(originVideoFormat, null, null, 0);
+            outputSurface = new OutputSurface();
+            decoder.configure(originVideoFormat, outputSurface.getSurface(), null, 0);
         }
     }
 
@@ -77,27 +87,42 @@ public class VideoController2 {
             MediaFormat mediaFormat = MediaFormat.createVideoFormat(MIME_TYPE, width, height);
             mediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
             mediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
-            mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, selectColorFormat(encoder.getCodecInfo(), MIME_TYPE));
+            mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
 //                mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
             mediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 5);
             encoder.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            inputSurface = new InputSurface(encoder.createInputSurface());
+            inputSurface.makeCurrent();
         }
     }
 
-    public void syncCompress() {
+    public boolean isCompressing() {
+        return isCompressing;
+    }
+
+    public void compress() {
         if (!isCompressing) {
+            this.isCanceled = false;
             compressTask = new VideoCompressTask();
             compressTask.execute();
             isCompressing = true;
         }
     }
 
-    private boolean compress() {
+    public void cancel() {
+        this.isCanceled = true;
+        if (!isCompressing) {
+            MediaUtils.deleteFile(outPath);
+        }
+    }
+
+    private boolean doCompress() {
+        boolean result = false;
         try {
-            initDecoder();
-            decoder.start();
             initEncoder();
             encoder.start();
+            initDecoder();
+            decoder.start();
 
             if (originVideoFormat != null) {
                 audioTraceIndex = mediaMuxer.addTrack(originAudioFormat);
@@ -107,7 +132,7 @@ public class VideoController2 {
             mediaExtractor.selectTrack(originVideoTraceIndex);
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             boolean isDecoderDone = false;
-            while (!isDecoderDone) {
+            while (!isDecoderDone && !isCanceled) {
                 int decoderInputBufferIndex = decoder.dequeueInputBuffer(TIMEOUT_USEC);
                 if (decoderInputBufferIndex >= 0) {
                     ByteBuffer byteBuffer = decoder.getInputBuffer(decoderInputBufferIndex);
@@ -119,16 +144,31 @@ public class VideoController2 {
                         decoder.queueInputBuffer(decoderInputBufferIndex, 0, size, mediaExtractor.getSampleTime(), mediaExtractor.getSampleFlags());
                         mediaExtractor.advance();
                     }
-//                    Log.i("compress", "size: " + size);
                 }
 
                 while (true) {
                     int decoderOutputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, TIMEOUT_USEC);
 //                    Log.i("compress", "decoderOutputBufferIndex: " + decoderOutputBufferIndex);
                     if (decoderOutputBufferIndex >= 0) {
-                        ByteBuffer byteBuffer = decoder.getOutputBuffer(decoderOutputBufferIndex);
-                        encodeVideoData(bufferInfo, byteBuffer);
-                        decoder.releaseOutputBuffer(decoderOutputBufferIndex, false);
+                        boolean doRender = bufferInfo.size != 0;
+                        decoder.releaseOutputBuffer(decoderOutputBufferIndex, doRender);
+
+                        if (doRender) {
+                            try {
+                                outputSurface.awaitNewImage();
+                                outputSurface.drawImage(false);
+
+                                inputSurface.setPresentationTime(bufferInfo.presentationTimeUs * 1000);
+                                inputSurface.swapBuffers();
+
+                                encodeVideoData();
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        } else if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            encoder.signalEndOfInputStream();
+                        }
+
                         compressTask.onProgress(bufferInfo.presentationTimeUs * 1.0f / duration * 100);
                     } else if (decoderOutputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         // do no thing
@@ -138,16 +178,20 @@ public class VideoController2 {
                 }
             }
 
-            mediaExtractor.unselectTrack(originVideoTraceIndex);
-            if (audioTraceIndex != -1 && originAudioFormat != null) {
-                mediaExtractor.selectTrack(originAudioTraceIndex);
-                encodeAudioData();
+            if (!isCanceled) {
+                mediaExtractor.unselectTrack(originVideoTraceIndex);
+                if (audioTraceIndex != -1 && originAudioFormat != null) {
+                    mediaExtractor.selectTrack(originAudioTraceIndex);
+                    encodeAudioData();
+                }
+                compressTask.onProgress(100);
+                result = true;
+            } else {
+                result = false;
             }
-            compressTask.onProgress(100);
-            return true;
         } catch (IOException e) {
             e.printStackTrace();
-            return false;
+            result = false;
         } finally {
             if (decoder != null) {
                 decoder.stop();
@@ -171,35 +215,29 @@ public class VideoController2 {
                 }
             }
         }
+        if (!result) {
+            MediaUtils.deleteFile(outPath);
+        }
+        return result;
     }
 
-    private void encodeVideoData(MediaCodec.BufferInfo bufferInfo, ByteBuffer byteBuffer) {
-        int encoderInputBufferIndex = encoder.dequeueInputBuffer(TIMEOUT_USEC);
-//        Log.i("compress", "encodeVideoData, encoderInputBufferIndex: " + encoderInputBufferIndex);
-        if (encoderInputBufferIndex >= 0) {
-            ByteBuffer encodeByteBuffer = encoder.getInputBuffer(encoderInputBufferIndex);
-            byte[] outData = new byte[bufferInfo.size - bufferInfo.offset];
-            byteBuffer.get(outData, bufferInfo.offset, bufferInfo.size);
-            encodeByteBuffer.clear();
-            encodeByteBuffer.put(outData);
-            encoder.queueInputBuffer(encoderInputBufferIndex, 0, outData.length, bufferInfo.presentationTimeUs, bufferInfo.flags);
-            MediaCodec.BufferInfo encodeOutBufferInfo = new MediaCodec.BufferInfo();
-            while (true) {
-                int encoderOutputBufferIndex = encoder.dequeueOutputBuffer(encodeOutBufferInfo, TIMEOUT_USEC);
-                if (encoderOutputBufferIndex >= 0) {
+    private void encodeVideoData() {
+        MediaCodec.BufferInfo encodeOutBufferInfo = new MediaCodec.BufferInfo();
+        while (true) {
+            int encoderOutputBufferIndex = encoder.dequeueOutputBuffer(encodeOutBufferInfo, TIMEOUT_USEC);
+            if (encoderOutputBufferIndex >= 0) {
 //                    Log.i("compress", "encodeVideoData, presentationTimeUs: " + encodeOutBufferInfo.presentationTimeUs + ", offset: " + encodeOutBufferInfo.offset + ", size: " + encodeOutBufferInfo.size);
-                    ByteBuffer encoderOutBuffer = encoder.getOutputBuffer(encoderOutputBufferIndex);
-                    mediaMuxer.writeSampleData(videoTraceIndex, encoderOutBuffer, encodeOutBufferInfo);
-                    encoder.releaseOutputBuffer(encoderOutputBufferIndex, false);
-                } else if (encoderOutputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    if (videoTraceIndex == -1) {
-                        videoFormat = encoder.getOutputFormat();
-                        videoTraceIndex = mediaMuxer.addTrack(videoFormat);
-                        mediaMuxer.start();
-                    }
-                } else {
-                    break;
+                ByteBuffer encoderOutBuffer = encoder.getOutputBuffer(encoderOutputBufferIndex);
+                mediaMuxer.writeSampleData(videoTraceIndex, encoderOutBuffer, encodeOutBufferInfo);
+                encoder.releaseOutputBuffer(encoderOutputBufferIndex, false);
+            } else if (encoderOutputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                if (videoTraceIndex == -1) {
+                    videoFormat = encoder.getOutputFormat();
+                    videoTraceIndex = mediaMuxer.addTrack(videoFormat);
+                    mediaMuxer.start();
                 }
+            } else {
+                break;
             }
         }
     }
@@ -344,8 +382,8 @@ public class VideoController2 {
             return this;
         }
 
-        public VideoController2 build() {
-            VideoController2 controller = new VideoController2();
+        public SVideoCompress build() {
+            SVideoCompress controller = new SVideoCompress();
             try {
                 controller.init(videoPath, outPath);
                 controller.prepareVideoSize(videoPath, quality, width, height, bitrate);
@@ -357,15 +395,7 @@ public class VideoController2 {
         }
     }
 
-    public interface CompressListener {
-        void onStart();
-        void onSuccess();
-        void onFail();
-        void onProgress(float percent);
-    }
-
     private class VideoCompressTask extends AsyncTask<String, Float, Boolean> {
-
 
         public VideoCompressTask() {
         }
@@ -384,7 +414,7 @@ public class VideoController2 {
 
         @Override
         protected Boolean doInBackground(String... paths) {
-            return compress();
+            return doCompress();
         }
 
         @Override
@@ -402,6 +432,7 @@ public class VideoController2 {
                 if (result) {
                     compressListener.onSuccess();
                 } else {
+
                     compressListener.onFail();
                 }
             }

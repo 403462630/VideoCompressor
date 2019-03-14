@@ -3,23 +3,48 @@ package com.vincent.videocompressor;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
+import android.media.MediaMetadataRetriever;
 import android.media.MediaMuxer;
+import android.text.TextUtils;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-public class MediaMuxerUtils {
+public class MediaUtils {
     public static String VIDEO_MINE_TYPE = "video/";
     public static String AUDIO_MINE_TYPE = "audio/";
 
+
+    public static boolean isSupportCompress(String videoPath) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        retriever.setDataSource(videoPath);
+        int width = Integer.valueOf(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
+        int height = Integer.valueOf(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
+        int bitrate = Integer.valueOf(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE));
+//        long duration = Long.valueOf(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION));
+        retriever.release();
+        return bitrate > width * height * 2;
+    }
+
+    public static void deleteFile(String filePath) {
+        if (TextUtils.isEmpty(filePath)) {
+            return;
+        }
+        File file = new File(filePath);
+        if (file.exists() && file.isFile()) {
+            file.delete();
+        }
+    }
+
     /**
-     * 有严重bug，不支持
+     * 不同格式的视频 有严重bug，不支持
      * @param videoList
      * @param desPath
      * @return
      */
-    private boolean mergeVideoList(List<String> videoList, String desPath) {
+    private static boolean mergeVideoList(List<String> videoList, String desPath) {
         MediaMuxer mediaMuxer = null;
         try {
             mediaMuxer = new MediaMuxer(desPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
@@ -63,7 +88,7 @@ public class MediaMuxerUtils {
         return false;
     }
 
-    private void addMediaFormat(MediaMuxer mediaMuxer, List<String> videoList, int[] traceIndexes) {
+    private static void addMediaFormat(MediaMuxer mediaMuxer, List<String> videoList, int[] traceIndexes) {
         int videoIndex = -1;
         int audioIndex = -1;
         try {
