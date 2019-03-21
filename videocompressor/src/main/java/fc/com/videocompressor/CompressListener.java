@@ -1,4 +1,4 @@
-package com.vincent.videocompressor;
+package fc.com.videocompressor;
 
 public interface CompressListener {
     void onStart();

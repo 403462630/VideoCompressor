@@ -13,9 +13,9 @@ import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
-import com.vincent.videocompressor.CompressListener;
-import com.vincent.videocompressor.SVideoCompress;
-import com.vincent.videocompressor.VideoCompress;
+import fc.com.videocompressor.CompressListener;
+import fc.com.videocompressor.SVideoCompress;
+import fc.com.videocompressor.VideoCompress;
 
 import java.io.File;
 import java.net.URISyntaxException;

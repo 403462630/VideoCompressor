@@ -1,4 +1,4 @@
-package com.vincent.videocompressor;
+package fc.com.videocompressor;
 
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
