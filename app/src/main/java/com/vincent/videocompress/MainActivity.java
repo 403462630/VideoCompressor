@@ -14,6 +14,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import fc.com.videocompressor.CompressListener;
+import fc.com.videocompressor.MediaUtils;
 import fc.com.videocompressor.SVideoCompress;
 import fc.com.videocompressor.VideoCompress;
 
@@ -69,7 +70,7 @@ public class MainActivity extends AppCompatActivity {
         btn_compress.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                String destPath = tv_output.getText().toString() + File.separator + "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", getLocale()).format(new Date()) + ".mp4";
+                String destPath = tv_output.getText().toString() + File.separator + "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date()) + ".mp4";
 //                new MediaMuxerHelper().test(tv_input.getText().toString(), destPath);
 //                String destPath = tv_output.getText().toString() + File.separator + "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss", getLocale()).format(new Date()) + ".mp3";
 //                new MediaMuxerHelper().splitAudio(tv_input.getText().toString(), destPath);

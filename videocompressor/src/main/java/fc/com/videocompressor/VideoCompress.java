@@ -11,6 +11,11 @@ import android.os.AsyncTask;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
+/**
+ * 问题一：发现 视频宽高 大于等于（1080, 2160）时，压缩后视频变形
+ * 问题二：压缩不能改变视频的宽高
+ * SVideoCompress 不存在以上问题
+ */
 public class VideoCompress {
     final int TIMEOUT_USEC = 2500;
     public static final String MIME_TYPE = "video/avc";
@@ -204,7 +209,7 @@ public class VideoCompress {
 //        Log.i("compress", "encodeVideoData, encoderInputBufferIndex: " + encoderInputBufferIndex);
         if (encoderInputBufferIndex >= 0) {
             ByteBuffer encodeByteBuffer = encoder.getInputBuffer(encoderInputBufferIndex);
-            byte[] outData = new byte[bufferInfo.size - bufferInfo.offset];
+            byte[] outData = new byte[bufferInfo.size];
             byteBuffer.get(outData, bufferInfo.offset, bufferInfo.size);
             encodeByteBuffer.clear();
             encodeByteBuffer.put(outData);

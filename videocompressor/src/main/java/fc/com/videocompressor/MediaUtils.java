@@ -1,16 +1,21 @@
 package fc.com.videocompressor;
 
 import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaMuxer;
 import android.text.TextUtils;
+import android.util.Log;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 
 public class MediaUtils {
     public static String VIDEO_MINE_TYPE = "video/";
@@ -35,6 +40,282 @@ public class MediaUtils {
         File file = new File(filePath);
         if (file.exists() && file.isFile()) {
             file.delete();
+        }
+    }
+
+    /**
+     * 添加ADTS头，如果要与视频流合并就不用添加，单独AAC文件就需要添加，否则无法正常播放
+     */
+    private static void addADTStoPacket(int sampleRateType, byte[] packet, int packetLen) {
+        int profile = 2; // AAC LC
+        int chanCfg = 2; // CPE
+
+        packet[0] = (byte) 0xFF;
+        packet[1] = (byte) 0xF9;
+        packet[2] = (byte) (((profile - 1) << 6) + (sampleRateType << 2) + (chanCfg >> 2));
+        packet[3] = (byte) (((chanCfg & 3) << 6) + (packetLen >> 11));
+        packet[4] = (byte) ((packetLen & 0x7FF) >> 3);
+        packet[5] = (byte) (((packetLen & 7) << 5) + 0x1F);
+        packet[6] = (byte) 0xFC;
+    }
+
+    private static void extractPCMAudioData2(String videoPath, String desPath) {
+        MediaExtractor videoExtractor = new MediaExtractor();
+        FileOutputStream fileOutputStream = null;
+        BufferedOutputStream mAudioBos = null;
+        MediaCodec decoder = null;
+        MediaCodec encoder = null;
+        try {
+            fileOutputStream = new FileOutputStream(desPath);
+            mAudioBos = new BufferedOutputStream(fileOutputStream, 200 * 1024);
+            videoExtractor.setDataSource(videoPath);
+
+            int audioTraceIndex = findAudioTrackIndex(videoExtractor);
+            MediaFormat audioFormat = videoExtractor.getTrackFormat(audioTraceIndex);
+            String mineType = audioFormat.getString(MediaFormat.KEY_MIME);
+
+            decoder = MediaCodec.createDecoderByType(mineType);
+            decoder.configure(audioFormat, null, null, 0);
+            decoder.start();
+
+            encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
+            MediaFormat encodeMediaFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44100, audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
+            encodeMediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, audioFormat.getInteger(MediaFormat.KEY_BIT_RATE));
+            encodeMediaFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
+
+            encoder.configure(encodeMediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            encoder.start();
+
+            videoExtractor.selectTrack(audioTraceIndex);
+            int timeout = 1000;
+            boolean isDecoderDone = false;
+            while (!isDecoderDone) {
+                int inputIndex = decoder.dequeueInputBuffer(timeout);
+                if (inputIndex >= 0) {
+                    ByteBuffer byteBuffer = decoder.getInputBuffer(inputIndex);
+                    int size = videoExtractor.readSampleData(byteBuffer, 0);
+                    if (size < 0) {
+                        decoder.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        isDecoderDone = true;
+                    } else {
+                        long time = videoExtractor.getSampleTime();
+                        decoder.queueInputBuffer(inputIndex, 0, size, time, videoExtractor.getSampleFlags());
+                        videoExtractor.advance();
+                        Log.i("extractPCMAudioData", "decodeInputIndex: " + inputIndex + ", time: " + time);
+                    }
+                }
+
+                MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+                while (true) {
+                    int outputIndex = decoder.dequeueOutputBuffer(bufferInfo, timeout);
+                    Log.i("extractPCMAudioData", "decodeOutputIndex: " + outputIndex);
+                    if (outputIndex >= 0) {
+                        ByteBuffer byteBuffer = decoder.getOutputBuffer(outputIndex);
+
+                        int encodeInputIndex = encoder.dequeueInputBuffer(timeout);
+                        Log.i("extractPCMAudioData", "encodeInputIndex: " + encodeInputIndex);
+                        if (encodeInputIndex >= 0) {
+                            ByteBuffer encodeByteBuffer = encoder.getInputBuffer(encodeInputIndex);
+                            byte[] outData = new byte[bufferInfo.size];
+                            byteBuffer.get(outData, bufferInfo.offset, bufferInfo.size);
+                            encodeByteBuffer.clear();
+                            encodeByteBuffer.limit(outData.length);
+                            encodeByteBuffer.put(outData);
+                            encoder.queueInputBuffer(encodeInputIndex, 0, outData.length, bufferInfo.presentationTimeUs, bufferInfo.flags);
+
+                            MediaCodec.BufferInfo encodeBufferInfo = new MediaCodec.BufferInfo();
+                            while (true) {
+                                int encodeOutputIndex = encoder.dequeueOutputBuffer(encodeBufferInfo, timeout);
+                                Log.i("extractPCMAudioData", "encodeOutputIndex: " + encodeOutputIndex);
+                                if (encodeOutputIndex >= 0) {
+                                    Log.i("extractPCMAudioData", "presentationTimeUs: " + encodeBufferInfo.presentationTimeUs + ", size: " + encodeBufferInfo.size + ", offset: " + encodeBufferInfo.offset);
+                                    ByteBuffer encoderOutputByteBuffer = encoder.getOutputBuffer(encodeOutputIndex);
+                                    encoderOutputByteBuffer.position(encodeBufferInfo.offset);
+                                    encoderOutputByteBuffer.limit(encodeBufferInfo.offset + encodeBufferInfo.size);
+
+                                    byte[] data = new byte[encodeBufferInfo.size + 7];
+                                    addADTStoPacket(44100, data, data.length);
+                                    encoderOutputByteBuffer.get(data, 7, encodeBufferInfo.size);
+
+                                    mAudioBos.write(data, 0, data.length);
+                                    mAudioBos.flush();
+                                    encoder.releaseOutputBuffer(encodeOutputIndex, false);
+                                } else if (encodeOutputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                                    // do no thing
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        decoder.releaseOutputBuffer(outputIndex, false);
+                    } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        // do no thing
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            if (decoder != null) {
+                decoder.stop();
+                decoder.release();
+            }
+            if (encoder != null) {
+                encoder.stop();
+                encoder.release();
+            }
+            videoExtractor.release();
+//            if (mediaMuxer != null) {
+//                mediaMuxer.stop();
+//                mediaMuxer.release();
+//            }
+            if (fileOutputStream != null) {
+                try {
+                    fileOutputStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+            if (mAudioBos != null) {
+                try {
+                    mAudioBos.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    private static short[] toShortArray(byte[] src) {
+        int count = src.length;
+        short[] dest = new short[count];
+        for (int i = 0; i < count; i++) {
+            dest[i] = (short) (dest[i] & 0xff);
+        }
+        return dest;
+    }
+
+    private static byte[] toByteArray(short[] src) {
+        int count = src.length;
+        byte[] dest = new byte[count << 1];
+        for (int i = 0; i < count; i++) {
+            dest[i * 2 +1] = (byte) ((src[i] & 0xFF00) >> 8);
+            dest[i * 2] = (byte) ((src[i] & 0x00FF));
+        }
+        return dest;
+    }
+
+    private static void extractPCMAudioData(String videoPath, String desPath) {
+        MediaExtractor videoExtractor = new MediaExtractor();
+        MediaMuxer mediaMuxer = null;
+        MediaCodec decoder = null;
+        MediaCodec encoder = null;
+        try {
+            videoExtractor.setDataSource(videoPath);
+            mediaMuxer = new MediaMuxer(desPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+
+            int audioTraceIndex = findAudioTrackIndex(videoExtractor);
+            MediaFormat audioFormat = videoExtractor.getTrackFormat(audioTraceIndex);
+            String mineType = audioFormat.getString(MediaFormat.KEY_MIME);
+//            int bytesize = audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE);
+            int aIndex = -1;
+
+            decoder = MediaCodec.createDecoderByType(mineType);
+            decoder.configure(audioFormat, null, null, 0);
+            decoder.start();
+
+            encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
+            MediaFormat encodeMediaFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44100, audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
+            encodeMediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, audioFormat.getInteger(MediaFormat.KEY_BIT_RATE));
+//            encodeMediaFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+            encodeMediaFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
+
+            encoder.configure(encodeMediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            encoder.start();
+
+            videoExtractor.selectTrack(audioTraceIndex);
+            int timeout = 1000;
+            boolean isDecoderDone = false;
+            while (!isDecoderDone) {
+                int inputIndex = decoder.dequeueInputBuffer(timeout);
+                if (inputIndex >= 0) {
+                    ByteBuffer byteBuffer = decoder.getInputBuffer(inputIndex);
+                    int size = videoExtractor.readSampleData(byteBuffer, 0);
+                    if (size < 0) {
+                        decoder.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        isDecoderDone = true;
+                    } else {
+                        long time = videoExtractor.getSampleTime();
+                        decoder.queueInputBuffer(inputIndex, 0, size, time, videoExtractor.getSampleFlags());
+                        videoExtractor.advance();
+                        Log.i("extractPCMAudioData", "decodeInputIndex: " + inputIndex + ", time: " + time);
+                    }
+                }
+
+                MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+                while (true) {
+                    int outputIndex = decoder.dequeueOutputBuffer(bufferInfo, timeout);
+                    Log.i("extractPCMAudioData", "decodeOutputIndex: " + outputIndex);
+                    if (outputIndex >= 0) {
+                        ByteBuffer byteBuffer = decoder.getOutputBuffer(outputIndex);
+
+                        int encodeInputIndex = encoder.dequeueInputBuffer(timeout);
+                        Log.i("extractPCMAudioData", "encodeInputIndex: " + encodeInputIndex);
+                        if (encodeInputIndex >= 0) {
+                            ByteBuffer encodeByteBuffer = encoder.getInputBuffer(encodeInputIndex);
+                            byte[] outData = new byte[bufferInfo.size - bufferInfo.offset];
+                            byteBuffer.get(outData, bufferInfo.offset, bufferInfo.size);
+                            encodeByteBuffer.clear();
+                            encodeByteBuffer.put(outData);
+                            encoder.queueInputBuffer(encodeInputIndex, 0, outData.length, bufferInfo.presentationTimeUs, bufferInfo.flags);
+
+                            MediaCodec.BufferInfo encodeBufferInfo = new MediaCodec.BufferInfo();
+                            while (true) {
+                                int encodeOutputIndex = encoder.dequeueOutputBuffer(encodeBufferInfo, timeout);
+                                Log.i("extractPCMAudioData", "encodeOutputIndex: " + encodeOutputIndex);
+                                if (encodeOutputIndex >= 0) {
+                                    Log.i("extractPCMAudioData", "presentationTimeUs: " + encodeBufferInfo.presentationTimeUs + ", size: " + encodeBufferInfo.size);
+                                    ByteBuffer encoderOutputByteBuffer = encoder.getOutputBuffer(encodeOutputIndex);
+
+                                    mediaMuxer.writeSampleData(aIndex, encoderOutputByteBuffer, encodeBufferInfo);
+                                    encoder.releaseOutputBuffer(encodeOutputIndex, false);
+                                } else if (encodeOutputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                                    if (aIndex == -1) {
+                                        MediaFormat mediaFormat = encoder.getOutputFormat();
+                                        aIndex = mediaMuxer.addTrack(mediaFormat);
+                                        mediaMuxer.start();
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        decoder.releaseOutputBuffer(outputIndex, false);
+                    } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        // do no thing
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            if (decoder != null) {
+                decoder.stop();
+                decoder.release();
+            }
+            if (encoder != null) {
+                encoder.stop();
+                encoder.release();
+            }
+            videoExtractor.release();
+            if (mediaMuxer != null) {
+                mediaMuxer.stop();
+                mediaMuxer.release();
+            }
         }
     }
 
